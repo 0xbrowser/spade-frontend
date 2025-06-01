@@ -4,6 +4,10 @@ import { useEffect, useState } from "react";
 import { usePoolBasicStore } from "@/store/poolBasicStore";
 import { useAlgoMetrics, formatAsPercentage } from "@/utils/algometrics";
 import { LuArrowLeft } from "react-icons/lu";
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, LineChart, Line
+} from "recharts";
+import { AlertCircle } from "lucide-react";
 
 interface PoolMetrics {
   apy: number;
@@ -14,11 +18,21 @@ interface PoolMetrics {
   chain: string;
 }
 
+interface PoolHistoryData {
+  timestamp: number;
+  apy?: number;
+  tvlUsd?: number;
+  [key: string]: any;
+}
+
 export const DataDetailsContent = () => {
   const { selectedPoolId } = usePoolBasicStore();
   const { pools, protocolData, fetchProtocolData, error } = useAlgoMetrics();
   const [poolMetrics, setPoolMetrics] = useState<PoolMetrics | null>(null);
+  const [poolHistory, setPoolHistory] = useState<PoolHistoryData[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
+  // 拉取基本池信息
   useEffect(() => {
     const fetchData = async () => {
       if (selectedPoolId) {
@@ -39,6 +53,29 @@ export const DataDetailsContent = () => {
     fetchData();
   }, [selectedPoolId, fetchProtocolData, pools]);
 
+  // 拉取历史曲线
+  useEffect(() => {
+    const fetchHistory = async () => {
+      if (!poolMetrics) return;
+      setLoadingHistory(true);
+      setPoolHistory([]);
+      try {
+        // DefiLlama标准API参数格式
+        const url = `https://yields.llama.fi/chart/${encodeURIComponent(
+          poolMetrics.project
+        )}/${encodeURIComponent(poolMetrics.chain)}/${encodeURIComponent(poolMetrics.symbol)}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Failed to fetch pool history");
+        const json = await res.json();
+        setPoolHistory(json.data || []);
+      } catch (e) {
+        setPoolHistory([]);
+      }
+      setLoadingHistory(false);
+    };
+    if (poolMetrics) fetchHistory();
+  }, [poolMetrics]);
+
   if (!selectedPoolId)
     return (
       <div className="flex items-center justify-center min-h-[400px] text-gray-600">
@@ -48,13 +85,27 @@ export const DataDetailsContent = () => {
   if (error) return <div className="text-gray-600">Failed to load data</div>;
   if (!poolMetrics) return <div className="text-gray-600">Pool data not found</div>;
 
-  const protocolMetrics = poolMetrics ? protocolData[poolMetrics.project] : null;
+  const protocolMetrics = protocolData[poolMetrics.project];
+  const sharpeRatio = poolMetrics.mu / poolMetrics.sigma;
+
+  // 可视化图表数据（纯真实数据）
+  const barData = [
+    { name: "APY", value: poolMetrics.apy },
+    { name: "Average Return", value: poolMetrics.mu },
+    { name: "Volatility", value: poolMetrics.sigma }
+  ];
+
+  // 图表X轴格式化
+  const formatDate = (timestamp: number) => {
+    const d = new Date(timestamp * 1000);
+    return `${d.getMonth() + 1}-${d.getDate()}`;
+  };
 
   return (
     <div className="bg-white shadow rounded-lg p-6">
       <div className="flex items-center mb-6 hover:bg-gray-100 rounded-lg w-9 h-9 justify-center cursor-pointer">
-        <LuArrowLeft 
-          className="w-4 h-4 text-gray-900" 
+        <LuArrowLeft
+          className="w-4 h-4 text-gray-900"
           onClick={() => window.history.back()}
         />
       </div>
@@ -81,7 +132,14 @@ export const DataDetailsContent = () => {
               </p>
               <p>
                 <span className="font-medium">Sharpe Ratio:</span>{" "}
-                {(poolMetrics.mu / poolMetrics.sigma).toFixed(2)}
+                <span className="inline-flex items-center">
+                  {sharpeRatio.toFixed(2)}
+                  {sharpeRatio < 1 && (
+                    <AlertCircle className="w-4 h-4 text-red-500 ml-2">
+                      <title>Sharpe Ratio is low, this pool might be risky!</title>
+                    </AlertCircle>
+                  )}
+                </span>
               </p>
             </div>
           </div>
@@ -121,21 +179,87 @@ export const DataDetailsContent = () => {
               </p>
             </div>
           </div>
+
+          {/* 柱状图对比 */}
+          <div>
+            <h2 className="text-lg font-semibold mb-2 text-gray-900">Key Metrics Comparison</h2>
+            <ResponsiveContainer width="100%" height={180}>
+              <BarChart data={barData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" />
+                <YAxis />
+                <Tooltip />
+                <Bar dataKey="value" fill="#6366f1" radius={10} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </div>
 
         <div>
-          <h2 className="text-lg font-semibold mb-2 text-gray-900">Hallmarks</h2>
-          {protocolMetrics?.hallmarks && protocolMetrics.hallmarks.length > 0 ? (
-            <ul className="list-disc list-inside space-y-2 text-gray-800">
-              {protocolMetrics.hallmarks.map((hallmark: string, index: number) => (
-                <li key={index}>
-                  {hallmark}
-                </li>
-              ))}
-            </ul>
+          {/* TVL/历史收益率曲线 */}
+          <h2 className="text-lg font-semibold mb-2 text-gray-900">Historical Trends</h2>
+          {loadingHistory ? (
+            <div className="text-gray-500">Loading chart...</div>
+          ) : poolHistory.length === 0 ? (
+            <div className="text-gray-500">No history data available for this pool.</div>
           ) : (
-            <p className="text-gray-600">No hallmarks available</p>
+            <div className="space-y-8">
+              {/* TVL历史曲线 */}
+              <div>
+                <h3 className="font-medium mb-1">TVL History</h3>
+                <ResponsiveContainer width="100%" height={120}>
+                  <LineChart data={poolHistory}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey="timestamp"
+                      tickFormatter={formatDate}
+                      minTickGap={30}
+                    />
+                    <YAxis />
+                    <Tooltip
+                      labelFormatter={v => formatDate(Number(v))}
+                      formatter={(v: any) => [`$${Number(v).toLocaleString()}`, "TVL"]}
+                    />
+                    <Line type="monotone" dataKey="tvlUsd" stroke="#06b6d4" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              {/* APY历史曲线 */}
+              <div>
+                <h3 className="font-medium mb-1">APY History</h3>
+                <ResponsiveContainer width="100%" height={120}>
+                  <LineChart data={poolHistory}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis
+                      dataKey="timestamp"
+                      tickFormatter={formatDate}
+                      minTickGap={30}
+                    />
+                    <YAxis />
+                    <Tooltip
+                      labelFormatter={v => formatDate(Number(v))}
+                      formatter={(v: any) => [formatAsPercentage(Number(v) / 100), "APY"]}
+                    />
+                    <Line type="monotone" dataKey="apy" stroke="#22d3ee" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
           )}
+
+          {/* Hallmarks部分 */}
+          <div className="mt-8">
+            <h2 className="text-lg font-semibold mb-2 text-gray-900">Hallmarks</h2>
+            {protocolMetrics?.hallmarks && protocolMetrics.hallmarks.length > 0 ? (
+              <ul className="list-disc list-inside space-y-2 text-gray-800">
+                {protocolMetrics.hallmarks.map((hallmark: string, index: number) => (
+                  <li key={index}>{hallmark}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-gray-600">No hallmarks available</p>
+            )}
+          </div>
         </div>
       </div>
     </div>
